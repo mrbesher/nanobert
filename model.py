@@ -14,6 +14,21 @@ class Config:
     dropout_prob: float = 0.2
 
 
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.fc1 = nn.Linear(config.embed_dim, 4 * config.embed_dim, bias=config.bias)
+        self.fc2 = nn.Linear(4 * config.embed_dim, config.embed_dim)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(config.dropout_prob)
+
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.fc2(x)
+        x = self.dropout(x)
+        return x
+
+
 class SelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -58,6 +73,25 @@ class SelfAttention(nn.Module):
         embeddings = self.proj_dropout(embeddings)
 
         return embeddings
+
+
+class EncoderBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.self_attn = SelfAttention(config)
+        self.layer_norm = nn.LayerNorm()
+        self.mlp = MLP(config)
+
+    def forward(self, x):
+        batch_size, seq_len, embed_dim = x.size()
+        embeddings = self.self_attn(x)
+        x = embeddings + x
+        x = self.layer_norm(x)
+        x = self.mlp(x)
+        # TODO: Add addition and layernorm here
+
+        return x
 
 
 x = torch.randn((4, 15, 32))
