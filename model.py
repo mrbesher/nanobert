@@ -8,11 +8,14 @@ import torch.nn.functional as F
 
 @dataclass
 class Config:
+    n_layers: int = 3
     embed_dim: int = 32
     n_heads: int = 4
     bias: bool = False
     dropout_prob: float = 0.2
-
+    vocab_size: int = 64
+    n_positions: int = 64
+    
 
 class MLP(nn.Module):
     def __init__(self, config):
@@ -80,18 +83,36 @@ class EncoderBlock(nn.Module):
         super().__init__()
         self.config = config
         self.self_attn = SelfAttention(config)
-        self.layer_norm = nn.LayerNorm()
+        self.attn_layer_norm = nn.LayerNorm()
+        self.mlp_layer_norm = nn.LayerNorm()
         self.mlp = MLP(config)
 
     def forward(self, x):
-        batch_size, seq_len, embed_dim = x.size()
-        embeddings = self.self_attn(x)
-        x = embeddings + x
-        x = self.layer_norm(x)
-        x = self.mlp(x)
-        # TODO: Add addition and layernorm here
-
+        # input size: (batch_size, seq_len, embed_dim)
+        x = self.self_attn(x) + x
+        x = self.attn_layer_norm(x)
+        x = self.mlp(x) + x
+        x = self.mlp_layer_norm(x)
         return x
+
+
+class BERT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.embedding = nn.Embedding(config.vocab_size, config.embed_dim)
+        self.encoder_blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.n_layers)])
+    
+    def forward(self, x):
+        # input size: (batch_size, seq_len)
+        x = self.embedding(x) # (batch_size, seq_len, embed_dim)
+        # TODO: Add positional embeddings
+
+        for encoder_block in self.encoder_blocks:
+            x = encoder_block(x)
+        
+        return x
+
 
 
 x = torch.randn((4, 15, 32))
