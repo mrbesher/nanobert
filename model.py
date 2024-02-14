@@ -17,6 +17,34 @@ class Config:
     n_positions: int = 64
     
 
+def get_relative_position(n_positions: int, n_heads: int) -> torch.Tensor:
+    # Source: ofirpress/attention_with_linear_biases
+    context_position = torch.arange(n_positions)[:, None]
+    memory_position = torch.arange(n_positions)[None, :]
+
+    relative_position = memory_position - context_position
+    relative_position = torch.abs(relative_position).unsqueeze(0).expand(n_heads, -1, -1)
+
+    return relative_position
+
+def get_slopes(n_heads):
+    # Source: https://nn.labml.ai/transformers/alibi/index.html
+    n = 2 ** math.floor(math.log2(n_heads))
+    m_0 = 2.0 ** (-8.0 / n)
+
+    m = torch.pow(m_0, torch.arange(1, 1 + n))
+
+    if n < n_heads:
+        m_hat_0 = 2.0 ** (-4.0 / n)
+
+        m_hat = torch.pow(m_hat_0, torch.arange(1, 1 + 2 * (n_heads - n), 2))
+
+        m = torch.cat([m, m_hat])
+
+    return m
+
+
+
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -33,7 +61,7 @@ class MLP(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, alibi_matrix):
         super().__init__()
         self.config = config
 
@@ -44,6 +72,8 @@ class SelfAttention(nn.Module):
 
         self.attn_dropout = nn.Dropout(config.dropout_prob)
         self.proj_dropout = nn.Dropout(config.dropout_prob)
+
+        self.alibi_matrix = alibi_matrix
 
     def forward(self, x):
         batch_size, seq_len, embed_dim = x.size()
@@ -64,6 +94,8 @@ class SelfAttention(nn.Module):
         qk_dot = (
             q @ k.transpose(-1, -2) / math.sqrt(head_embed_dim)
         )  # (batch_size, n_heads, seq_len, seq_len)
+        qk_dot = qk_dot + self.alibi_matrix[:, :seq_len, :seq_len]
+
         attn_scores = F.softmax(qk_dot, dim=-1)
         attn_scores = self.attn_dropout(attn_scores)
         embeddings = attn_scores @ v  # (batch_size, n_heads, seq_len, head_embed_dim)
@@ -79,12 +111,12 @@ class SelfAttention(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, alibi_matrix):
         super().__init__()
         self.config = config
-        self.self_attn = SelfAttention(config)
-        self.attn_layer_norm = nn.LayerNorm()
-        self.mlp_layer_norm = nn.LayerNorm()
+        self.self_attn = SelfAttention(config, alibi_matrix)
+        self.attn_layer_norm = nn.LayerNorm(config.embed_dim)
+        self.mlp_layer_norm = nn.LayerNorm(config.embed_dim)
         self.mlp = MLP(config)
 
     def forward(self, x):
@@ -101,7 +133,13 @@ class BERT(nn.Module):
         super().__init__()
         self.config = config
         self.embedding = nn.Embedding(config.vocab_size, config.embed_dim)
-        self.encoder_blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.n_layers)])
+        
+        # ALIBI
+        relative_pos = get_relative_position(config.n_positions, config.n_heads)
+        slopes = get_slopes(config.n_heads)
+        alibi_matrix = relative_pos * slopes[:, None, None]
+
+        self.encoder_blocks = nn.ModuleList([EncoderBlock(config, alibi_matrix) for _ in range(config.n_layers)])
     
     def forward(self, x):
         # input size: (batch_size, seq_len)
@@ -115,8 +153,7 @@ class BERT(nn.Module):
 
 
 
-x = torch.randn((4, 15, 32))
+x = torch.LongTensor([[1, 9, 15, 0, 6], [8, 1, 2, 21, 6]])
 config = Config()
-self_attn = SelfAttention(config)
-self_attn.train()
-print(self_attn(x).size())
+bert = BERT(config)
+print(bert(x).size())
