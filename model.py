@@ -15,7 +15,7 @@ class Config:
     dropout_prob: float = 0.2
     vocab_size: int = 64
     n_positions: int = 64
-    
+
 
 def get_relative_position(n_positions: int, n_heads: int) -> torch.Tensor:
     # Source: ofirpress/attention_with_linear_biases
@@ -23,9 +23,12 @@ def get_relative_position(n_positions: int, n_heads: int) -> torch.Tensor:
     memory_position = torch.arange(n_positions)[None, :]
 
     relative_position = memory_position - context_position
-    relative_position = torch.abs(relative_position).unsqueeze(0).expand(n_heads, -1, -1)
+    relative_position = (
+        torch.abs(relative_position).unsqueeze(0).expand(n_heads, -1, -1)
+    )
 
     return relative_position
+
 
 def get_slopes(n_heads):
     # Source: https://nn.labml.ai/transformers/alibi/index.html
@@ -42,7 +45,6 @@ def get_slopes(n_heads):
         m = torch.cat([m, m_hat])
 
     return m
-
 
 
 class MLP(nn.Module):
@@ -75,15 +77,14 @@ class SelfAttention(nn.Module):
 
         self.alibi_matrix = alibi_matrix
 
-    def forward(self, x):
+    def forward(self, x, attention_mask=None):
         batch_size, seq_len, embed_dim = x.size()
         head_embed_dim = embed_dim // self.config.n_heads
 
         qkv = self.attn_mat(x)  # batch_size, seq_len, embed_dim * 3
         q, k, v = qkv.split(embed_dim, dim=-1)
-        q = q.view(
-            batch_size, seq_len, self.config.n_heads, head_embed_dim
-        )  # (batch_size, seq_len, n_heads, embed_dim // n_heads)
+        # view as (batch_size, seq_len, n_heads, embed_dim // n_heads)
+        q = q.view(batch_size, seq_len, self.config.n_heads, head_embed_dim)
         k = k.view(batch_size, seq_len, self.config.n_heads, head_embed_dim)
         v = v.view(batch_size, seq_len, self.config.n_heads, head_embed_dim)
 
@@ -94,7 +95,11 @@ class SelfAttention(nn.Module):
         qk_dot = (
             q @ k.transpose(-1, -2) / math.sqrt(head_embed_dim)
         )  # (batch_size, n_heads, seq_len, seq_len)
+
         qk_dot = qk_dot + self.alibi_matrix[:, :seq_len, :seq_len]
+
+        if attention_mask is not None:
+            qk_dot = qk_dot.masked_fill(attention_mask[:, None] == 0, float("-inf"))
 
         attn_scores = F.softmax(qk_dot, dim=-1)
         attn_scores = self.attn_dropout(attn_scores)
@@ -119,9 +124,9 @@ class EncoderBlock(nn.Module):
         self.mlp_layer_norm = nn.LayerNorm(config.embed_dim)
         self.mlp = MLP(config)
 
-    def forward(self, x):
+    def forward(self, x, attention_mask=None):
         # input size: (batch_size, seq_len, embed_dim)
-        x = self.self_attn(x) + x
+        x = self.self_attn(x, attention_mask=attention_mask) + x
         x = self.attn_layer_norm(x)
         x = self.mlp(x) + x
         x = self.mlp_layer_norm(x)
@@ -133,27 +138,28 @@ class BERT(nn.Module):
         super().__init__()
         self.config = config
         self.embedding = nn.Embedding(config.vocab_size, config.embed_dim)
-        
+
         # ALIBI
         relative_pos = get_relative_position(config.n_positions, config.n_heads)
         slopes = get_slopes(config.n_heads)
-        alibi_matrix = relative_pos * slopes[:, None, None]
+        alibi_matrix = -relative_pos * slopes[:, None, None]
 
-        self.encoder_blocks = nn.ModuleList([EncoderBlock(config, alibi_matrix) for _ in range(config.n_layers)])
-    
-    def forward(self, x):
+        self.encoder_blocks = nn.ModuleList(
+            [EncoderBlock(config, alibi_matrix) for _ in range(config.n_layers)]
+        )
+
+    def forward(self, x, attention_mask=None):
         # input size: (batch_size, seq_len)
-        x = self.embedding(x) # (batch_size, seq_len, embed_dim)
-        # TODO: Add positional embeddings
+        x = self.embedding(x)  # (batch_size, seq_len, embed_dim)
 
         for encoder_block in self.encoder_blocks:
-            x = encoder_block(x)
-        
+            x = encoder_block(x, attention_mask=attention_mask)
+
         return x
 
 
-
-x = torch.LongTensor([[1, 9, 15, 0, 6], [8, 1, 2, 21, 6]])
-config = Config()
+config = Config(embed_dim=4, n_heads=2)
 bert = BERT(config)
-print(bert(x).size())
+x = torch.LongTensor([[1, 9, 15, 0, 6], [8, 1, 2, 21, 6]])
+attention_matrix = torch.LongTensor([[1, 1, 1, 1, 1], [1, 1, 0, 0, 0]])
+print(bert(x, attention_mask=attention_matrix).size())
