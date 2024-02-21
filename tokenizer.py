@@ -6,10 +6,12 @@ import torch
 
 @dataclass
 class TokenizerConfig:
-    vocab_str: str = "ابتةثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئ0123456789.؟"
+    vocab_str: str = "ابتةثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئ0123456789.؟ "
     pad_token_id: int = 0
     unk_token_id: int = 1
-    num_special_token_ids: int = 2
+    mask_token_id: int = 2
+    unk_token: str = '$'
+    num_special_token_ids: int = 3
 
 
 class Tokenizer:
@@ -17,13 +19,18 @@ class Tokenizer:
         self.vocab_str = config.vocab_str
         self.pad_token_id = config.pad_token_id
         self.unk_token_id = config.unk_token_id
-        self.vocab = {
+        self.mask_token_id = config.mask_token_id
+        self.unk_token = config.unk_token
+        self.char2id = {
             char: idx + config.num_special_token_ids
             for idx, char in enumerate(self.vocab_str)
         }
+        self.id2char = {
+            id: char for char, id in self.char2id.items()
+        }
 
     def token2id(self, char: str) -> int:
-        return self.vocab.get(char, self.unk_token_id)
+        return self.char2id.get(char, self.unk_token_id)
 
     def encode(
         self,
@@ -49,6 +56,26 @@ class Tokenizer:
             tokenized_text = torch.LongTensor(tokenized_text)
 
         return tokenized_text
+    
+    def decode(self, token_ids: List[int] | torch.LongTensor, skip_special_tokens: bool = True) -> str:
+        """
+        Args:
+          token_ids (List[int] | torch.LongTensor): A list of token ids in the shape of (seq_len).
+        """
+
+        if isinstance(token_ids, torch.LongTensor):
+          if len(token_ids.shape) != 1:
+            raise Exception("`decode` only supports tensors of a single dimension.")
+          
+          token_ids = token_ids.tolist()
+
+        # Remove pad tokens
+        token_ids = [token_id for token_id in token_ids if token_id != self.pad_token_id]
+
+        if skip_special_tokens:
+            return ''.join([self.id2char[token_id] for token_id in token_ids if token_id in self.id2char])
+        
+        return ''.join([self.id2char.get(token_id, self.unk_token) for token_id in token_ids])
 
     def batch_encode(
         self, texts: List[str], max_length: int = None, return_type: str = None
