@@ -3,22 +3,12 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from model import BERT
-
-
-@dataclass
-class Config:
-    n_layers: int = 3
-    embed_dim: int = 32
-    n_heads: int = 4
-    bias: bool = False
-    dropout_prob: float = 0.2
-    vocab_size: int = 64
-    n_positions: int = 64
+from model import BERT, BERTConfig
 
 class BERTwithMLMHead(nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config: BERTConfig):
         super().__init__()
+        self.config = config
         self.bert = BERT(config)
 
         # Transformation
@@ -42,7 +32,7 @@ class BERTwithMLMHead(nn.Module):
 
 
 if __name__ == '__main__':
-    config = Config(embed_dim=8, n_heads=2)
+    config = BERTConfig(embed_dim=8, n_heads=2)
     bert_mlm = BERTwithMLMHead(config)
     x = torch.LongTensor([[4, 6, 1, 2, 0, 0], [6, 8, 1, 2, 4, 7]])
     attention_mask = torch.LongTensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]])

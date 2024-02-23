@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 
 @dataclass
-class Config:
+class BERTConfig:
     n_layers: int = 3
     embed_dim: int = 32
     n_heads: int = 4
@@ -48,7 +48,7 @@ def get_slopes(n_heads):
 
 
 class MLP(nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config: BERTConfig):
         super().__init__()
         self.fc1 = nn.Linear(config.embed_dim, 4 * config.embed_dim, bias=config.bias)
         self.fc2 = nn.Linear(4 * config.embed_dim, config.embed_dim)
@@ -63,7 +63,7 @@ class MLP(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, config: Config, alibi_matrix):
+    def __init__(self, config: BERTConfig, alibi_matrix):
         super().__init__()
         self.config = config
 
@@ -116,7 +116,7 @@ class SelfAttention(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, config: Config, alibi_matrix):
+    def __init__(self, config: BERTConfig, alibi_matrix):
         super().__init__()
         self.config = config
         self.self_attn = SelfAttention(config, alibi_matrix)
@@ -134,7 +134,7 @@ class EncoderBlock(nn.Module):
 
 
 class BERT(nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config: BERTConfig):
         super().__init__()
         self.config = config
         self.embedding = nn.Embedding(config.vocab_size, config.embed_dim)
@@ -159,7 +159,7 @@ class BERT(nn.Module):
 
 
 if __name__ == '__main__':
-    config = Config(embed_dim=4, n_heads=2)
+    config = BERTConfig(embed_dim=4, n_heads=2)
     bert = BERT(config)
     x = torch.LongTensor([[1, 9, 15, 0, 6], [8, 1, 2, 21, 6]])
     attention_matrix = torch.LongTensor([[1, 1, 1, 1, 1], [1, 1, 0, 0, 0]])
