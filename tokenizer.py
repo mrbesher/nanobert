@@ -78,14 +78,25 @@ class Tokenizer:
         return ''.join([self.id2char.get(token_id, self.unk_token) for token_id in token_ids])
 
     def batch_encode(
-        self, texts: List[str], max_length: int = None, return_type: str = None
+        self, texts: List[str], max_length: int = None, return_type: str = None, padding: str = 'longest'
     ) -> List[List[int]] | torch.LongTensor:
+        """
+        Args:
+          padding (str): Specify padding type. Accepts 'longest' and 'max_length'
+        """
+
         tokenized_texts = [
             self.encode(text, max_length=None, padding=False) for text in texts
         ]
 
+        batch_max_length = max(len(token_ids) for token_ids in tokenized_texts)
         if max_length is None:
-            max_length = max(len(token_ids) for token_ids in tokenized_texts)
+            if padding == 'longest':
+                max_length = batch_max_length
+            else:
+                raise Exception('Padding is not set to "longest" and max_length is not specified.')
+        elif padding == 'longest':
+            max_length = min(max_length, batch_max_length)
 
         tokenized_texts = [token_ids[:max_length] for token_ids in tokenized_texts]
         tokenized_texts = [

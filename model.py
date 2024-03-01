@@ -138,6 +138,7 @@ class BERT(nn.Module):
         super().__init__()
         self.config = config
         self.embedding = nn.Embedding(config.vocab_size, config.embed_dim)
+        self.embedding_dropout = nn.Dropout(config.dropout_prob)
 
         # ALIBI
         relative_pos = get_relative_position(config.n_positions, config.n_heads)
@@ -151,6 +152,7 @@ class BERT(nn.Module):
     def forward(self, x, attention_mask=None):
         # input size: (batch_size, seq_len)
         x = self.embedding(x)  # (batch_size, seq_len, embed_dim)
+        x = self.embedding_dropout(x)
 
         for encoder_block in self.encoder_blocks:
             x = encoder_block(x, attention_mask=attention_mask)
