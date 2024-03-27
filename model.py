@@ -99,7 +99,7 @@ class SelfAttention(nn.Module):
         qk_dot = qk_dot + self.alibi_matrix[:, :seq_len, :seq_len]
 
         if attention_mask is not None:
-            qk_dot = qk_dot.masked_fill(attention_mask[:, None] == 0, float("-inf"))
+            qk_dot = qk_dot.masked_fill(attention_mask[:, None, None] == 0, float("-inf"))
 
         attn_scores = F.softmax(qk_dot, dim=-1)
         attn_scores = self.attn_dropout(attn_scores)

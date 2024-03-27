@@ -1,14 +1,21 @@
-from dataclasses import dataclass
+import argparse
+import json
 import math
+import random
+from dataclasses import dataclass
+from pathlib import Path
+import sys
 from typing import Dict, List
 
+import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from tokenizer import Tokenizer, TokenizerConfig
+from data_utils import mlm_collate_fn
 from mlm_model import BERTwithMLMHead
 from model import BERTConfig
+from tokenizer import Tokenizer, TokenizerConfig
 
 
 @dataclass
@@ -18,49 +25,19 @@ class MLMTrainConfig:
     lr: float = 1e-3
 
 
-def mlm_collate_fn(batch: List[str]) -> Dict:
-    """
-    Creates the necessary tensors required for training a Masked Language Model (MLM) using. Tokenizes the given batch of strings, creates attention masks, and generates random masks for the MLM task.
-
-    Args:
-        - batch (List[str]): A list of strings representing texts to be used during training.
-
-    Returns:
-        - dict: A dictionary containing the following keys:
-            + 'input_ids': Torch Tensor of shape (batch_size, seq_length) holding the token ids generated from the provided text batch.
-            + 'attention_mask': Torch Tensor of shape (batch_size, seq_length) filled with either 0 or 1 indicating presence or absence of tokens respectively.
-            + 'mlm_mask': Torch Tensor of shape (batch_size, seq_length) having values 0 or 1 depending if the token has been chosen for masking in the MLM task.
-    """
-    tokenized = tokenizer.batch_encode(
-        batch, max_length=model.config.n_positions, return_type="pt", padding="longest"
-    )
-
-    # Create the attention mask
-    attention_mask = (tokenized != 0).long()
-
-    # Create the MLM mask
-    input_lens = attention_mask.sum(dim=-1).tolist()
-
-    mlm_mask = torch.zeros(tokenized.shape, dtype=torch.long)
-    for idx, input_len in enumerate(input_lens):
-        n_masked_tokens = math.ceil(train_config.mlm_ratio * input_len)
-        masked_token_idx = torch.randperm(input_len)[:n_masked_tokens]
-        mlm_mask[idx, masked_token_idx] = 1
-
-    return {
-        "input_ids": tokenized,
-        "attention_mask": attention_mask,
-        "mlm_mask": mlm_mask,
-    }
+def accuracy_fn(y_pred, y):
+    predicted_token_ids = y_pred.max(dim=-1).indices
+    batch_scores = (y == predicted_token_ids).type(torch.FloatTensor)
+    return batch_scores.mean()
 
 
-def train(model, optimizer, criterion, train_dataloader, tokenizer):
+def train(model, optimizer, criterion, train_dataloader, tokenizer, device="cpu"):
     model.train()
 
     for batch in train_dataloader:
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        mlm_mask = batch["mlm_mask"]
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        mlm_mask = batch["mlm_mask"].to(device)
 
         input_ids = torch.where(mlm_mask == 0, input_ids, tokenizer.mask_token_id)
 
@@ -82,22 +59,22 @@ def train(model, optimizer, criterion, train_dataloader, tokenizer):
         optimizer.step()
 
 
-def evaluate(model, criterion, metric_fn, test_dataloader, tokenizer):
+def evaluate(model, criterion, metric_fn, test_dataloader, tokenizer, device="cpu"):
     model.eval()
 
     losses = []
     scores = []
 
     for batch in test_dataloader:
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        mlm_mask = batch["mlm_mask"]
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        mlm_mask = batch["mlm_mask"].to(device)
 
-        input_ids = torch.where(mlm_mask == 0, input_ids, tokenizer.mask_token_id)
+        masked_input_ids = torch.where(mlm_mask == 0, input_ids, tokenizer.mask_token_id)
 
         with torch.no_grad():
             output = model(
-                input_ids, attention_mask=attention_mask
+                masked_input_ids, attention_mask=attention_mask
             )  # output size: (bs, seq_len, vocab_size)
 
         num_mask_tokens = int(mlm_mask.sum().item())
@@ -114,23 +91,213 @@ def evaluate(model, criterion, metric_fn, test_dataloader, tokenizer):
         scores.append(score.detach().item())
 
     return losses, scores
-        
-
-model_config = BERTConfig(embed_dim=8, n_heads=2)
-tokenizer_config = TokenizerConfig()
-train_config = MLMTrainConfig()
-
-tokenizer = Tokenizer(tokenizer_config)
-model = BERTwithMLMHead(model_config)
-
-texts = ["مرحبا من أنت؟", "اهلا وسهلا"] * 10
-dataloader = DataLoader(texts, batch_size=2, shuffle=False, collate_fn=mlm_collate_fn)
-
-criterion = nn.CrossEntropyLoss(label_smoothing=train_config.label_smoothing)
-adam_optim = torch.optim.Adam(model.parameters(), lr=train_config.lr)
 
 
-for _ in range(1):
-  train(model, adam_optim, criterion, dataloader, tokenizer)
-  results = evaluate(model, criterion, lambda x, y: torch.tensor(0), dataloader, tokenizer)
-  print(results)
+def load_config(config_path, config_class):
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_dict = json.load(f)
+    return config_class(**config_dict)
+
+
+def save_model(model, save_path: Path, epoch):
+    save_path.mkdir(parents=True, exist_ok=True)
+    model_path = save_path / f"model_epoch_{epoch}.pth"
+    torch.save(model.state_dict(), model_path)
+    print(f"Model saved at {model_path}")
+
+
+def save_plots(train_losses, train_scores, test_losses, test_scores, save_path, epoch):
+    save_path.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(10, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(test_losses, label="Test Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title(f"Loss - Epoch {epoch}")
+
+    plt.subplot(1, 2, 2)
+    plt.plot(train_scores, label="Train Score")
+    plt.plot(test_scores, label="Test Score")
+    plt.xlabel("Epoch")
+    plt.ylabel("Score")
+    plt.legend()
+    plt.title(f"Score - Epoch {epoch}")
+
+    plt.savefig(save_path / f"plots_epoch_{epoch}.pdf")
+    print(f"Plots saved at {save_path / f'plots_epoch_{epoch}.pdf'}")
+
+
+def train_and_evaluate(
+    model,
+    adam_optim,
+    criterion,
+    train_dataloader,
+    test_dataloader,
+    tokenizer,
+    device,
+    args,
+):
+    train_losses = []
+    train_scores = []
+    test_losses = []
+    test_scores = []
+
+    for epoch in range(args.epochs):
+        # Train
+        train_loss, train_score = train(
+            model, adam_optim, criterion, train_dataloader, tokenizer, device=device
+        )
+        train_losses.append(train_loss)
+        train_scores.append(train_score)
+
+        # Evaluate
+        test_loss, test_score = evaluate(
+            model, criterion, accuracy_fn, test_dataloader, tokenizer, device=device
+        )
+        test_losses.append(test_loss)
+        test_scores.append(test_score)
+
+        print(
+            f"Epoch {epoch+1}/{args.epochs} - Train Loss: {train_loss:.4f}, Train Score: {train_score:.4f}, Test Loss: {test_loss:.4f}, Test Score: {test_score:.4f}"
+        )
+
+        # Save model every N epochs
+        if (epoch + 1) % args.save_every == 0:
+            save_model(model, args.save_path, epoch + 1)
+            save_plots(
+                train_losses,
+                train_scores,
+                test_losses,
+                test_scores,
+                args.save_path,
+                epoch + 1,
+            )
+
+    # Save model at the end
+    save_model(model, args.save_path, args.epochs)
+    save_plots(
+        train_losses,
+        train_scores,
+        test_losses,
+        test_scores,
+        args.save_path,
+        args.epochs,
+    )
+
+
+if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="MLM Training")
+    parser.add_argument(
+        "--model_config_path",
+        type=str,
+        required=True,
+        help="Path to the model configuration file",
+    )
+    parser.add_argument(
+        "--tokenizer_config_path",
+        type=str,
+        required=True,
+        help="Path to the tokenizer configuration file",
+    )
+    parser.add_argument(
+        "--train_config_path",
+        type=str,
+        required=True,
+        help="Path to the training configuration file",
+    )
+    parser.add_argument(
+        "--data_path", type=str, required=True, help="Path to the jsonlines data file"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=10, help="Number of training epochs"
+    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument(
+        "--test_ratio", type=float, default=0.25, help="Ratio of test data"
+    )
+    parser.add_argument(
+        "--save_path",
+        type=Path,
+        default="./saved_models",
+        help="Path to save the model and plots",
+    )
+    parser.add_argument(
+        "--save_every", type=int, default=1, help="Save model and plots every N epochs"
+    )
+    args = parser.parse_args()
+
+    # Load configurations
+    model_config = load_config(args.model_config_path, BERTConfig)
+    tokenizer_config = load_config(args.tokenizer_config_path, TokenizerConfig)
+    train_config = load_config(args.train_config_path, MLMTrainConfig)
+
+    # Model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = Tokenizer(tokenizer_config)
+    model = BERTwithMLMHead(model_config).to(device)
+
+    # Data
+    texts = []
+    with open(args.data_path, "r", encoding="utf-8") as f:
+        for line in f:
+            texts.append(json.loads(line))
+    
+    texts = texts[:200]
+
+    random.shuffle(texts)
+
+    test_size = int(len(texts) * args.test_ratio)
+    train_data = texts[test_size:]
+    test_data = texts[:test_size]
+
+    print(f"Train size: {len(train_data)}")
+    print(f"Test size: {len(test_data)}")
+
+    train_dataloader = DataLoader(
+        train_data,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=lambda batch: mlm_collate_fn(
+            batch,
+            tokenizer=tokenizer,
+            max_length=model.config.n_positions,
+            mlm_ratio=train_config.mlm_ratio,
+        ),
+    )
+
+    test_dataloader = DataLoader(
+        test_data,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=lambda batch: mlm_collate_fn(
+            batch,
+            tokenizer=tokenizer,
+            max_length=model.config.n_positions,
+            mlm_ratio=train_config.mlm_ratio,
+        ),
+    )
+
+    # Train loop
+    criterion = nn.CrossEntropyLoss(label_smoothing=train_config.label_smoothing)
+    adam_optim = torch.optim.Adam(model.parameters(), lr=train_config.lr)
+
+    for epoch in range(args.epochs):
+        train(model, adam_optim, criterion, train_dataloader, tokenizer, device=device)
+        test_losses, test_scores = evaluate(
+            model,
+            criterion,
+            accuracy_fn,
+            test_dataloader,
+            tokenizer,
+            device=device,
+        )
+
+        test_loss = sum(test_losses) / len(test_losses)
+        test_score = sum(test_scores) / len(test_scores)
+
+        print(
+            f"Epoch {epoch+1}/{args.epochs} - Test Loss: {test_loss:.4f}, Test Score: {test_score:.4f}"
+        )
