@@ -1,7 +1,7 @@
 # NanoBERT
 A simple implementation of BERT to imrpove our understanding.
 
-**Co-authores**: [Mounes Zaval](https://github.com/mouneszawal), [Zeynep Akkoc](https://github.com/akkocz17)
+**Co-authors**: [Mounes Zaval](https://github.com/mouneszawal), [Zeynep Akkoc](https://github.com/akkocz17)
 
 ## Training over Epochs
 ![Train and test loss and socre over epochs](assets/loss_score_graph.png)
