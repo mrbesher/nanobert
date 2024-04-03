@@ -1,1 +1,8 @@
-{}
+{
+  "vocab_str": "ابتةثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئ0123456789.؟ ",
+  "pad_token_id": 0,
+  "unk_token_id": 1,
+  "mask_token_id": 2,
+  "unk_token": "$",
+  "num_special_token_ids": 3
+}

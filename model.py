@@ -96,7 +96,7 @@ class SelfAttention(nn.Module):
             q @ k.transpose(-1, -2) / math.sqrt(head_embed_dim)
         )  # (batch_size, n_heads, seq_len, seq_len)
 
-        qk_dot = qk_dot + self.alibi_matrix[:, :seq_len, :seq_len]
+        qk_dot = qk_dot + self.alibi_matrix[:, :seq_len, :seq_len].to(qk_dot.device)
 
         if attention_mask is not None:
             qk_dot = qk_dot.masked_fill(attention_mask[:, None, None] == 0, float("-inf"))

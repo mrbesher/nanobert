@@ -2,15 +2,17 @@ import argparse
 import json
 import math
 import random
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
+from statistics import mean
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from data_utils import mlm_collate_fn
 from mlm_model import BERTwithMLMHead
@@ -22,7 +24,10 @@ from tokenizer import Tokenizer, TokenizerConfig
 class MLMTrainConfig:
     mlm_ratio: float = 0.2
     label_smoothing: float = 0.01
-    lr: float = 1e-3
+    lr: float = 1e-4
+    epochs: int = 3
+    batch_size: int = 1024
+    test_ratio: float = 0.25
 
 
 def accuracy_fn(y_pred, y):
@@ -34,16 +39,18 @@ def accuracy_fn(y_pred, y):
 def train(model, optimizer, criterion, train_dataloader, tokenizer, device="cpu"):
     model.train()
 
-    for batch in train_dataloader:
+    for batch in tqdm(train_dataloader, desc="Training"):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         mlm_mask = batch["mlm_mask"].to(device)
 
-        input_ids = torch.where(mlm_mask == 0, input_ids, tokenizer.mask_token_id)
+        masked_input_ids = torch.where(
+            mlm_mask == 0, input_ids, tokenizer.mask_token_id
+        )
 
         optimizer.zero_grad()
         output = model(
-            input_ids, attention_mask=attention_mask
+            masked_input_ids, attention_mask=attention_mask
         )  # output size: (bs, seq_len, vocab_size)
 
         num_mask_tokens = int(mlm_mask.sum().item())
@@ -65,12 +72,14 @@ def evaluate(model, criterion, metric_fn, test_dataloader, tokenizer, device="cp
     losses = []
     scores = []
 
-    for batch in test_dataloader:
+    for batch in tqdm(test_dataloader, desc="Evaluating"):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         mlm_mask = batch["mlm_mask"].to(device)
 
-        masked_input_ids = torch.where(mlm_mask == 0, input_ids, tokenizer.mask_token_id)
+        masked_input_ids = torch.where(
+            mlm_mask == 0, input_ids, tokenizer.mask_token_id
+        )
 
         with torch.no_grad():
             output = model(
@@ -101,7 +110,7 @@ def load_config(config_path, config_class):
 
 def save_model(model, save_path: Path, epoch):
     save_path.mkdir(parents=True, exist_ok=True)
-    model_path = save_path / f"model_epoch_{epoch}.pth"
+    model_path = save_path / f"model_epoch_{epoch}.pt"
     torch.save(model.state_dict(), model_path)
     print(f"Model saved at {model_path}")
 
@@ -126,41 +135,49 @@ def save_plots(train_losses, train_scores, test_losses, test_scores, save_path, 
     plt.title(f"Score - Epoch {epoch}")
 
     plt.savefig(save_path / f"plots_epoch_{epoch}.pdf")
+    plt.show()
     print(f"Plots saved at {save_path / f'plots_epoch_{epoch}.pdf'}")
 
 
 def train_and_evaluate(
     model,
-    adam_optim,
+    optimizer,
     criterion,
     train_dataloader,
     test_dataloader,
     tokenizer,
     device,
-    args,
+    train_config,
 ):
     train_losses = []
     train_scores = []
     test_losses = []
     test_scores = []
 
-    for epoch in range(args.epochs):
+    for epoch in range(train_config.epochs):
         # Train
-        train_loss, train_score = train(
-            model, adam_optim, criterion, train_dataloader, tokenizer, device=device
-        )
-        train_losses.append(train_loss)
-        train_scores.append(train_score)
+        train(model, optimizer, criterion, train_dataloader, tokenizer, device=device)
 
         # Evaluate
-        test_loss, test_score = evaluate(
+        batch_train_losses, batch_train_scores = evaluate(
+            model, criterion, accuracy_fn, train_dataloader, tokenizer, device=device
+        )
+        batch_test_losses, batch_test_scores = evaluate(
             model, criterion, accuracy_fn, test_dataloader, tokenizer, device=device
         )
+
+        train_loss = mean(batch_train_losses)
+        train_score = mean(batch_train_scores)
+        test_loss = mean(batch_test_losses)
+        test_score = mean(batch_test_scores)
+
+        train_losses.append(train_loss)
+        train_scores.append(train_score)
         test_losses.append(test_loss)
         test_scores.append(test_score)
 
         print(
-            f"Epoch {epoch+1}/{args.epochs} - Train Loss: {train_loss:.4f}, Train Score: {train_score:.4f}, Test Loss: {test_loss:.4f}, Test Score: {test_score:.4f}"
+            f"Epoch {epoch+1}/{train_config.epochs} - Train Loss: {train_loss:.4f}, Train Score: {train_score:.4f}, Test Loss: {test_loss:.4f}, Test Score: {test_score:.4f}"
         )
 
         # Save model every N epochs
@@ -176,14 +193,14 @@ def train_and_evaluate(
             )
 
     # Save model at the end
-    save_model(model, args.save_path, args.epochs)
+    save_model(model, args.save_path, train_config.epochs)
     save_plots(
         train_losses,
         train_scores,
         test_losses,
         test_scores,
         args.save_path,
-        args.epochs,
+        train_config.epochs,
     )
 
 
@@ -240,16 +257,13 @@ if __name__ == "__main__":
     model = BERTwithMLMHead(model_config).to(device)
 
     # Data
-    texts = []
     with open(args.data_path, "r", encoding="utf-8") as f:
-        for line in f:
-            texts.append(json.loads(line))
-    
-    texts = texts[:200]
+        texts = [json.loads(line) for line in f]
 
+    random.seed(42)
     random.shuffle(texts)
 
-    test_size = int(len(texts) * args.test_ratio)
+    test_size = int(len(texts) * train_config.test_ratio)
     train_data = texts[test_size:]
     test_data = texts[:test_size]
 
@@ -258,7 +272,7 @@ if __name__ == "__main__":
 
     train_dataloader = DataLoader(
         train_data,
-        batch_size=args.batch_size,
+        batch_size=train_config.batch_size,
         shuffle=True,
         collate_fn=lambda batch: mlm_collate_fn(
             batch,
@@ -270,7 +284,7 @@ if __name__ == "__main__":
 
     test_dataloader = DataLoader(
         test_data,
-        batch_size=args.batch_size,
+        batch_size=train_config.batch_size,
         shuffle=False,
         collate_fn=lambda batch: mlm_collate_fn(
             batch,
@@ -284,20 +298,13 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss(label_smoothing=train_config.label_smoothing)
     adam_optim = torch.optim.Adam(model.parameters(), lr=train_config.lr)
 
-    for epoch in range(args.epochs):
-        train(model, adam_optim, criterion, train_dataloader, tokenizer, device=device)
-        test_losses, test_scores = evaluate(
-            model,
-            criterion,
-            accuracy_fn,
-            test_dataloader,
-            tokenizer,
-            device=device,
-        )
-
-        test_loss = sum(test_losses) / len(test_losses)
-        test_score = sum(test_scores) / len(test_scores)
-
-        print(
-            f"Epoch {epoch+1}/{args.epochs} - Test Loss: {test_loss:.4f}, Test Score: {test_score:.4f}"
-        )
+    train_and_evaluate(
+        model=model,
+        optimizer=adam_optim,
+        criterion=criterion,
+        train_dataloader=train_dataloader,
+        test_dataloader=test_dataloader,
+        tokenizer=tokenizer,
+        device=device,
+        train_config=train_config,
+    )
